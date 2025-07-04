@@ -1,0 +1,79 @@
+# app.py (Executable script version)
+
+# Step 1: Load and preprocess data
+import pandas as pd
+import numpy as np
+import pathway as pw
+import datetime
+from pricing_models import model1_baseline_price, model2_demand_price, model3_competitive_price
+from utils import map_vehicle_type
+
+# Preprocess the dataset
+raw = pd.read_csv("dataset.csv")
+raw["Timestamp"] = pd.to_datetime(raw["LastUpdatedDate"] + " " + raw["LastUpdatedTime"], format="%d-%m-%Y %H:%M:%S")
+raw.to_csv("parking_stream.csv", index=False)
+
+# Define schema
+class ParkingSchema(pw.Schema):
+    Timestamp: str
+    Occupancy: int
+    Capacity: int
+    QueueLength: int
+    VehicleType: str
+    TrafficLevel: float
+    IsSpecialDay: int
+    Latitude: float
+    Longitude: float
+    SystemCodeNumber: str
+
+# Step 2: Ingest with Pathway
+fmt = "%Y-%m-%d %H:%M:%S"
+data = pw.demo.replay_csv("parking_stream.csv", schema=ParkingSchema, input_rate=1000)
+data = data.with_columns(
+    t=data.Timestamp.dt.strptime(fmt),
+    day=data.Timestamp.dt.strptime(fmt).dt.strftime("%Y-%m-%dT00:00:00")
+)
+
+# Step 3: Daily window and pricing model application
+delta_window = (
+    data.windowby(pw.this.t, instance=pw.this.day, window=pw.temporal.tumbling(datetime.timedelta(days=1)))
+    .reduce(
+        t=pw.this._pw_window_end,
+        occupancy=pw.reducers.max(pw.this.Occupancy),
+        capacity=pw.reducers.max(pw.this.Capacity),
+        queue=pw.reducers.max(pw.this.QueueLength),
+        traffic=pw.reducers.max(pw.this.TrafficLevel),
+        special=pw.reducers.max(pw.this.IsSpecialDay),
+        vtype=pw.reducers.last(pw.this.VehicleType)
+    )
+    .with_columns(
+        model1_price=model1_baseline_price(pw.this.occupancy, pw.this.capacity),
+        model2_price=model2_demand_price(
+            pw.this.occupancy,
+            pw.this.capacity,
+            pw.this.queue,
+            pw.this.traffic,
+            pw.this.special,
+            pw.this.vtype
+        )
+    )
+)
+
+# Step 4: Visualization
+import panel as pn
+import bokeh.plotting
+pn.extension()
+
+def price_plotter(source):
+    fig = bokeh.plotting.figure(height=400, width=800, x_axis_type="datetime", title="Dynamic Pricing: Model 1 & 2")
+    fig.line("t", "model1_price", source=source, line_width=2, color="blue", legend_label="Model 1")
+    fig.line("t", "model2_price", source=source, line_width=2, color="green", legend_label="Model 2")
+    fig.legend.location = "top_left"
+    return fig
+
+viz = delta_window.plot(price_plotter, sorting_col="t")
+pn.Column(viz).servable()
+
+# Step 5: Run pipeline
+if __name__ == "__main__":
+    pw.run()
