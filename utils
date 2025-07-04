@@ -1,0 +1,32 @@
+# utils.py
+import numpy as np
+from geopy.distance import geodesic
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    try:
+        return geodesic((lat1, lon1), (lat2, lon2)).km
+    except:
+        return np.nan
+
+def get_nearby_lots(current_id, current_lat, current_lon, all_lots, radius_km=1.0):
+    nearby = []
+    for lot in all_lots:
+        if lot['SystemCodeNumber'] == current_id:
+            continue
+        dist = haversine_distance(current_lat, current_lon, lot['Latitude'], lot['Longitude'])
+        if dist <= radius_km:
+            nearby.append({
+                'id': lot['SystemCodeNumber'],
+                'distance': dist,
+                'price': lot['current_price']  # expected to be injected beforehand
+            })
+    return nearby
+
+def map_vehicle_type(raw_type):
+    if isinstance(raw_type, str):
+        raw_type = raw_type.lower()
+        if "bike" in raw_type:
+            return "Bike"
+        elif "truck" in raw_type:
+            return "Truck"
+    return "Car"
